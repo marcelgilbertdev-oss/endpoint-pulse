@@ -3,7 +3,7 @@
  * flow — chrome.permissions.request per origin, inside the submit gesture,
  * so the user grants exactly the hosts they watch and nothing else.
  */
-import { loadConfigs, originPattern, saveConfigs } from "./storage.js";
+import { hasOriginPermission, loadConfigs, originPattern, saveConfigs } from "./storage.js";
 import type { EndpointConfig } from "./types.js";
 
 const list = document.getElementById("list") as HTMLUListElement;
@@ -34,7 +34,28 @@ async function render(): Promise<void> {
       await render();
     });
 
-    item.append(name, detail, remove);
+    item.append(name, detail);
+
+    // An endpoint whose origin was never granted (the seeded default, or a
+    // config synced in from another machine) gets its grant affordance here —
+    // permission requests need a user gesture, and this is one.
+    if (!(await hasOriginPermission(config.url))) {
+      const grant = document.createElement("button");
+      grant.type = "button";
+      grant.textContent = "Grant access";
+      grant.addEventListener("click", async () => {
+        const pattern = originPattern(config.url);
+        if (pattern === null) return;
+        const granted = await chrome.permissions.request({ origins: [pattern] });
+        if (granted) {
+          await chrome.runtime.sendMessage("check-now");
+          await render();
+        }
+      });
+      item.append(grant);
+    }
+
+    item.append(remove);
     list.append(item);
   }
 }

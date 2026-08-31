@@ -29,6 +29,13 @@ export async function saveStates(states: Record<string, EndpointState>): Promise
   await chrome.storage.local.set({ [STATE_KEY]: states });
 }
 
+/** True when the user has granted this endpoint's origin. */
+export async function hasOriginPermission(url: string): Promise<boolean> {
+  const pattern = originPattern(url);
+  if (pattern === null) return false;
+  return chrome.permissions.contains({ origins: [pattern] });
+}
+
 /** Origin pattern for chrome.permissions, e.g. "https://api.example.com/*". */
 export function originPattern(url: string): string | null {
   try {

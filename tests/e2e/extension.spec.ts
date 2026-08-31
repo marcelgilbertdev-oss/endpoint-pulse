@@ -35,9 +35,12 @@ test("the service worker registers and creates its alarm", async () => {
   const id = await extensionId();
   expect(id).toMatch(/^[a-p]{32}$/);
 
+  // The install handler creates the alarm asynchronously; poll rather than
+  // racing it — a fixed sleep would be the flake wearing a different hat.
   const [worker] = context.serviceWorkers();
-  const alarm = await worker!.evaluate(() => chrome.alarms.get("pulse"));
-  expect(alarm).toMatchObject({ name: "pulse", periodInMinutes: 1 });
+  await expect
+    .poll(() => worker!.evaluate(() => chrome.alarms.get("pulse")), { timeout: 10_000 })
+    .toMatchObject({ name: "pulse", periodInMinutes: 1 });
 });
 
 test("the popup renders the seeded endpoint", async () => {
@@ -61,4 +64,19 @@ test("the options page refuses a JSON field without an expected value", async ()
   await options.getByRole("button", { name: "Add and grant access" }).click();
 
   await expect(options.getByRole("alert")).toContainText("needs an expected value");
+});
+
+test("an ungranted origin is reported as a state, not discovered by exception", async () => {
+  const id = await extensionId();
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${id}/popup.html`);
+  await popup.getByRole("button", { name: "Check now" }).click();
+
+  // The seeded endpoint's origin was never granted, so the check must say so
+  // in words — and must NOT have attempted a fetch that sprays console errors.
+  await expect(popup.getByText(/access not granted/)).toBeVisible();
+
+  const options = await context.newPage();
+  await options.goto(`chrome-extension://${id}/options.html`);
+  await expect(options.getByRole("button", { name: "Grant access", exact: true })).toBeVisible();
 });

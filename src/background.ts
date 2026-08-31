@@ -10,7 +10,7 @@
  *    never as a blanket install-time grab.
  */
 import { badge, evaluate, fold, isDue, transition, type FetchedResponse } from "./checks.js";
-import { loadConfigs, loadStates, saveStates } from "./storage.js";
+import { hasOriginPermission, loadConfigs, loadStates, saveStates } from "./storage.js";
 import type { CheckResult, EndpointConfig } from "./types.js";
 
 const ALARM = "pulse";
@@ -43,6 +43,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function fetchEndpoint(config: EndpointConfig): Promise<CheckResult> {
   const started = performance.now();
   const now = Date.now();
+
+  // Attempting a fetch the user never authorised would both fail and spray
+  // browser-level console errors that chrome://extensions records against
+  // the extension. Not having permission is a knowable state — report it
+  // as one instead of discovering it by exception.
+  if (!(await hasOriginPermission(config.url))) {
+    return evaluate(
+      config,
+      { error: "access not granted — open Manage endpoints and grant this origin" },
+      0,
+      now,
+    );
+  }
+
   try {
     const response = await fetch(config.url, {
       cache: "no-store",
