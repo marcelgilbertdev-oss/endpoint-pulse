@@ -1,0 +1,20 @@
+{
+  "name": "endpoint-pulse",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Manifest V3 browser extension that watches your health endpoints: badge, latency, notifications on state change.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/chrome": "^0.1.32",
+    "esbuild": "^0.27.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

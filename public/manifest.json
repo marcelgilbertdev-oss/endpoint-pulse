@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Endpoint Pulse",
+  "version": "0.1.0",
+  "description": "Watches your health endpoints. Badge shows the worst state; notifications fire on failure and recovery.",
+  "permissions": ["alarms", "storage", "notifications"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Endpoint Pulse"
+  },
+  "options_page": "options.html",
+  "icons": {
+    "16": "icons/pulse16.png",
+    "48": "icons/pulse48.png",
+    "128": "icons/pulse128.png"
+  }
+}

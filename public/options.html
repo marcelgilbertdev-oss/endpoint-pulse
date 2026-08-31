@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Endpoint Pulse — endpoints</title>
+  <link rel="stylesheet" href="pulse.css">
+</head>
+<body class="options">
+  <h1>Endpoints</h1>
+  <p class="hint">
+    Endpoint Pulse asks for access to each origin only when you add it —
+    it never requests blanket host access at install.
+  </p>
+  <ul id="list"></ul>
+  <form id="add">
+    <h2>Add an endpoint</h2>
+    <label>Name <input name="name" required maxlength="60" placeholder="My API"></label>
+    <label>Health URL <input name="url" type="url" required placeholder="https://api.example.com/health"></label>
+    <label>Every (minutes) <input name="interval" type="number" min="1" max="60" value="5" required></label>
+    <label>Expected HTTP status <input name="status" type="number" min="100" max="599" value="200" required></label>
+    <label>JSON field (optional) <input name="jsonPath" placeholder="status  or  checks.database.status"></label>
+    <label>Must equal <input name="equals" placeholder="operational"></label>
+    <button type="submit">Add and grant access</button>
+    <p id="error" role="alert" hidden></p>
+  </form>
+  <script type="module" src="options.js"></script>
+</body>
+</html>
