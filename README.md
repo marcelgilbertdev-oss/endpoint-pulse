@@ -8,7 +8,8 @@ an endpoint goes down and one when it recovers — never a repeat.
 Built as a companion to my [payments platform](https://github.com/marcelgilbertdev-oss/zerofayyz-fintech):
 the extension ships watching that platform's public `/health` endpoint, which
 makes it the fourth independent consumer of the same API (after the React,
-Vue and Svelte clients).
+Vue and Svelte clients; a fifth, a Supabase
+[receipt portal](https://github.com/marcelgilbertdev-oss/receipt-portal), followed).
 
 ## What it demonstrates
 
