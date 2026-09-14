@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { badge, evaluate, fold, isDue, readPath, transition } from "../src/checks.js";
 import { HISTORY_LIMIT, type CheckResult, type EndpointConfig } from "../src/types.js";
+import { DEFAULT_ENDPOINTS, RETIRED_PLATFORM_HEALTH_URL } from "../src/types.js";
 
 const config: EndpointConfig = {
   id: "api",
@@ -122,5 +123,39 @@ describe("isDue", () => {
     expect(isDue(config, state, 4 * 60_000)).toBe(false);
     expect(isDue(config, state, 5 * 60_000 - 400)).toBe(true); // alarm fired 400ms early
     expect(isDue(config, state, 5 * 60_000)).toBe(true);
+  });
+});
+
+describe("migrateRetiredPlatformUrl", () => {
+  test("rewrites the retired /health seed to the liveness route and leaves user URLs alone", async () => {
+    const sync: Record<string, unknown> = {
+      endpoints: [
+        { id: "a", name: "platform", url: RETIRED_PLATFORM_HEALTH_URL, intervalMinutes: 5,
+          expect: { status: 200, jsonPath: "status", equals: "operational" } },
+        { id: "b", name: "mine", url: "https://example.com/health", intervalMinutes: 5,
+          expect: { status: 200 } },
+      ],
+    };
+    (globalThis as { chrome?: unknown }).chrome = {
+      storage: {
+        sync: {
+          get: async (key: string) => ({ [key]: sync[key] }),
+          set: async (obj: Record<string, unknown>) => { Object.assign(sync, obj); },
+        },
+        local: { get: async () => ({}), set: async () => {} },
+      },
+      alarms: { get: async () => undefined, create: () => {}, onAlarm: { addListener() {} } },
+      runtime: { onInstalled: { addListener() {} }, onStartup: { addListener() {} }, onMessage: { addListener() {} } },
+      permissions: { contains: async () => true },
+      action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
+      notifications: { create: () => {} },
+    };
+    const { migrateRetiredPlatformUrl } = await import("../src/background.js");
+    expect(await migrateRetiredPlatformUrl()).toBe(true);
+    const after = sync.endpoints as Array<{ url: string; expect: { jsonPath?: string; equals?: string } }>;
+    expect(after[0]?.url).toBe(DEFAULT_ENDPOINTS[0]?.url);
+    expect(after[0]?.expect).toEqual({ status: 200, jsonPath: "live", equals: "true" });
+    expect(after[1]?.url).toBe("https://example.com/health");
+    expect(await migrateRetiredPlatformUrl()).toBe(false); // idempotent
   });
 });

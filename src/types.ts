@@ -39,12 +39,27 @@ export type EndpointState = {
 
 export const HISTORY_LIMIT = 50;
 
+/**
+ * The seeded platform endpoint before 2026-09-14. A stored copy of it is
+ * rewritten to the liveness route on startup (see background.ts), so an
+ * installed extension heals itself on reload instead of waiting for the
+ * user to notice the database bill.
+ */
+export const RETIRED_PLATFORM_HEALTH_URL =
+  "https://zerofayyz-fintech-api.onrender.com/api/v1/health";
+
 export const DEFAULT_ENDPOINTS: EndpointConfig[] = [
   {
     id: "zerofayyz-fintech-api",
     name: "ZEROFAYYZ Fintech API",
-    url: "https://zerofayyz-fintech-api.onrender.com/api/v1/health",
+    // The dependency-free liveness route, not /health. /health asks the
+    // platform's database for its latency, and a poll every five minutes is
+    // exactly enough to stop a scale-to-zero database from ever sleeping —
+    // found on 2026-09-14 when this extension, open in a browser all day,
+    // turned out to be what was burning the free tier's monthly compute
+    // (platform ADR 20). A watcher must not cost the thing it watches.
+    url: "https://zerofayyz-fintech-api.onrender.com/api/v1/live",
     intervalMinutes: 5,
-    expect: { status: 200, jsonPath: "status", equals: "operational" },
+    expect: { status: 200, jsonPath: "live", equals: "true" },
   },
 ];

@@ -10,8 +10,8 @@
  *    never as a blanket install-time grab.
  */
 import { badge, evaluate, fold, isDue, transition, type FetchedResponse } from "./checks.js";
-import { hasOriginPermission, loadConfigs, loadStates, saveStates } from "./storage.js";
-import type { CheckResult, EndpointConfig } from "./types.js";
+import { hasOriginPermission, loadConfigs, loadStates, saveConfigs, saveStates } from "./storage.js";
+import { DEFAULT_ENDPOINTS, RETIRED_PLATFORM_HEALTH_URL, type CheckResult, type EndpointConfig } from "./types.js";
 
 const ALARM = "pulse";
 
@@ -24,7 +24,29 @@ async function ensureAlarm(): Promise<void> {
     // Tick every minute; per-endpoint intervals decide who actually runs.
     chrome.alarms.create(ALARM, { periodInMinutes: 1 });
   }
+  await migrateRetiredPlatformUrl();
   await poll(); // an install or a browser start deserves an immediate read
+}
+
+/**
+ * Stored configs outlive the seeded defaults: a copy installed before
+ * 2026-09-14 still carries the platform's /health URL, and that URL is what
+ * kept the platform's scale-to-zero database awake all day (platform ADR 20).
+ * Rewrite it to the liveness route once. Only the exact retired URL is
+ * touched — an endpoint the user typed themselves is theirs.
+ */
+export async function migrateRetiredPlatformUrl(): Promise<boolean> {
+  const configs = await loadConfigs();
+  const seeded = DEFAULT_ENDPOINTS[0];
+  if (!seeded) return false;
+  let changed = false;
+  const next = configs.map((config) => {
+    if (config.url !== RETIRED_PLATFORM_HEALTH_URL) return config;
+    changed = true;
+    return { ...config, url: seeded.url, expect: { ...seeded.expect } };
+  });
+  if (changed) await saveConfigs(next);
+  return changed;
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {

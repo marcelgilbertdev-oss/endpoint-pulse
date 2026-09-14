@@ -6,7 +6,7 @@ latency and the last error in plain words, and you get one notification when
 an endpoint goes down and one when it recovers — never a repeat.
 
 Built as a companion to my [payments platform](https://github.com/marcelgilbertdev-oss/zerofayyz-fintech):
-the extension ships watching that platform's public `/health` endpoint, which
+the extension ships watching that platform's public liveness endpoint, which
 makes it the fourth independent consumer of the same API (after the React,
 Vue and Svelte clients; a fifth, a Supabase
 [receipt portal](https://github.com/marcelgilbertdev-oss/receipt-portal), followed).
@@ -76,3 +76,14 @@ Then `chrome://extensions` → Developer mode → **Load unpacked** → `dist/`.
   a monitor inside a browser shouldn't pretend to be Pingdom.
 - No auth headers yet. Watching an endpoint that needs credentials means
   storing credentials, and that deserves a real design pass, not a v0.1 field.
+
+## The lesson the extension taught its own platform (14 Sep 2026)
+
+The seeded endpoint used to be the platform's `/health`, which reports the
+database's latency and therefore queries it. Polled every five minutes from a
+browser that is open all day, that was exactly enough to stop the platform's
+scale-to-zero database from ever sleeping, and it burned most of the free
+tier's monthly compute before `pg_stat_activity` named the caller. The seed now
+points at `/api/v1/live`, a route that touches nothing, and an installed copy
+rewrites its stored `/health` entry on the next startup. A watcher must not
+cost the thing it watches; the platform's ADR 20 tells the whole story.
