@@ -1,6 +1,14 @@
 import { describe, expect, test } from "vitest";
 
-import { badge, evaluate, fold, isDue, readPath, transition } from "../src/checks.js";
+import {
+  badge,
+  checkWithRetry,
+  evaluate,
+  fold,
+  isDue,
+  readPath,
+  transition,
+} from "../src/checks.js";
 import { HISTORY_LIMIT, type CheckResult, type EndpointConfig } from "../src/types.js";
 import { DEFAULT_ENDPOINTS, RETIRED_PLATFORM_HEALTH_URL } from "../src/types.js";
 
@@ -12,12 +20,13 @@ const config: EndpointConfig = {
   expect: { status: 200, jsonPath: "checks.database.status", equals: "operational" },
 };
 
-const result = (outcome: "ok" | "fail", checkedAt = 0): CheckResult => ({
+const result = (outcome: "ok" | "fail", checkedAt = 0, retried = false): CheckResult => ({
   endpointId: "api",
   outcome,
   reason: outcome === "fail" ? "boom" : null,
   latencyMs: 10,
   checkedAt,
+  retried,
 });
 
 describe("readPath", () => {
@@ -41,6 +50,7 @@ describe("evaluate", () => {
     );
     expect(outcome).toEqual({
       endpointId: "api", outcome: "ok", reason: null, latencyMs: 12, checkedAt: 1000,
+      retried: false,
     });
   });
 
@@ -157,5 +167,160 @@ describe("migrateRetiredPlatformUrl", () => {
     expect(after[0]?.expect).toEqual({ status: 200, jsonPath: "live", equals: "true" });
     expect(after[1]?.url).toBe("https://example.com/health");
     expect(await migrateRetiredPlatformUrl()).toBe(false); // idempotent
+  });
+});
+
+describe("a retry is recorded, not hidden", () => {
+  // 2026-09-24: the popup reported the platform API down with "network error —
+  // host unreachable or permission not granted". The API was up — 12/12 probes
+  // returned 200 — and permission was granted; the give-away was the 313ms
+  // latency, because the no-permission path returns 0ms without fetching. One
+  // request had died in transport and a single failed poll flipped the badge.
+  test("a check that succeeded on the second attempt is ok, and says so", () => {
+    const outcome = evaluate(
+      config,
+      { status: 200, json: { checks: { database: { status: "operational" } } } },
+      12,
+      1000,
+      true,
+    );
+    expect(outcome.outcome).toBe("ok");
+    expect(outcome.retried).toBe(true);
+    expect(outcome.reason).toBeNull();
+  });
+
+  test("an ordinary check is not marked as retried", () => {
+    const outcome = evaluate(
+      config,
+      { status: 200, json: { checks: { database: { status: "operational" } } } },
+      12,
+      1000,
+    );
+    expect(outcome.retried).toBe(false);
+  });
+
+  test("a failure that survived both attempts is still a failure", () => {
+    const outcome = evaluate(
+      config,
+      { error: "the request did not complete (two attempts)" },
+      30,
+      1000,
+      true,
+    );
+    expect(outcome.outcome).toBe("fail");
+    expect(outcome.retried).toBe(true);
+    expect(outcome.reason).toContain("two attempts");
+  });
+
+  test("a retried success does not fire a went-down notification", () => {
+    // The whole point: one dropped request must not notify. A transition is
+    // computed from outcomes, so a retried ok has to read as ok.
+    const previous = result("ok", 0);
+    const current = result("ok", 60_000, true);
+    expect(transition(previous, current)).toBeNull();
+  });
+
+  test("a reason never blames permission once permission has been checked", () => {
+    // background.ts settles permission before fetching, so the transport
+    // failure message must not offer it as a possible cause.
+    const outcome = evaluate(config, { error: "the request did not complete" }, 313, 1000);
+    expect(outcome.reason).not.toContain("permission");
+  });
+});
+
+describe("checkWithRetry — which failures earn a second attempt", () => {
+  const healthy = {
+    status: 200,
+    json: { checks: { database: { status: "operational" } } },
+    latencyMs: 12,
+  };
+  // No real delay: the sleep is injected precisely so the suite stays instant.
+  const sleeps: number[] = [];
+  const sleep = async (ms: number) => void sleeps.push(ms);
+
+  const attemptsOf = (...answers: unknown[]) => {
+    let i = 0;
+    const calls = { count: 0 };
+    const attempt = async () => {
+      calls.count += 1;
+      return answers[Math.min(i++, answers.length - 1)] as never;
+    };
+    return { attempt, calls };
+  };
+
+  test("a request that never completed is retried, and a good second answer is ok", async () => {
+    const { attempt, calls } = attemptsOf(
+      { error: "the request did not complete", timedOut: false, latencyMs: 313 },
+      healthy,
+    );
+    const outcome = await checkWithRetry(config, attempt, sleep, 1000, 400);
+    expect(calls.count).toBe(2);
+    expect(outcome.outcome).toBe("ok");
+    expect(outcome.retried).toBe(true);
+    // The latency shown is the attempt that actually answered, not the blip.
+    expect(outcome.latencyMs).toBe(12);
+  });
+
+  test("a healthy first attempt is never retried", async () => {
+    const { attempt, calls } = attemptsOf(healthy);
+    const outcome = await checkWithRetry(config, attempt, sleep, 1000, 400);
+    expect(calls.count).toBe(1);
+    expect(outcome.retried).toBe(false);
+    expect(outcome.outcome).toBe("ok");
+  });
+
+  test("a response that ARRIVED and was wrong is not retried — the service answered", async () => {
+    // A 503 is the service speaking. Asking again does not make it truer, and
+    // retrying would halve the speed at which a real outage is reported.
+    const { attempt, calls } = attemptsOf({ status: 503, json: {}, latencyMs: 20 });
+    const outcome = await checkWithRetry(config, attempt, sleep, 1000, 400);
+    expect(calls.count).toBe(1);
+    expect(outcome.outcome).toBe("fail");
+    expect(outcome.retried).toBe(false);
+    expect(outcome.reason).toContain("503");
+  });
+
+  test("a timeout is not retried — 15s of silence is already the signal", async () => {
+    const { attempt, calls } = attemptsOf({
+      error: "timed out after 15s",
+      timedOut: true,
+      latencyMs: 15_000,
+    });
+    const outcome = await checkWithRetry(config, attempt, sleep, 1000, 400);
+    expect(calls.count).toBe(1);
+    expect(outcome.outcome).toBe("fail");
+    expect(outcome.reason).toBe("timed out after 15s");
+  });
+
+  test("failing twice is a real failure, and the reason says both attempts went", async () => {
+    const { attempt, calls } = attemptsOf({
+      error: "the request did not complete",
+      timedOut: false,
+      latencyMs: 300,
+    });
+    const outcome = await checkWithRetry(config, attempt, sleep, 1000, 400);
+    expect(calls.count).toBe(2);
+    expect(outcome.outcome).toBe("fail");
+    expect(outcome.retried).toBe(true);
+    expect(outcome.reason).toBe("the request did not complete (two attempts)");
+  });
+
+  test("one blip does not fire a went-down notification", async () => {
+    // The defect this whole change exists for: a single dropped request used
+    // to flip the badge red and notify.
+    const { attempt } = attemptsOf(
+      { error: "the request did not complete", timedOut: false, latencyMs: 313 },
+      healthy,
+    );
+    const previouslyOk = evaluate(config, { status: 200, json: healthy.json }, 10, 0);
+    const now = await checkWithRetry(config, attempt, sleep, 60_000, 400);
+    expect(transition(previouslyOk, now)).toBeNull();
+  });
+
+  test("two failed attempts still fire went-down", async () => {
+    const { attempt } = attemptsOf({ error: "the request did not complete", timedOut: false });
+    const previouslyOk = evaluate(config, { status: 200, json: healthy.json }, 10, 0);
+    const now = await checkWithRetry(config, attempt, sleep, 60_000, 400);
+    expect(transition(previouslyOk, now)).toBe("went-down");
   });
 });

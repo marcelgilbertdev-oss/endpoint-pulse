@@ -9,11 +9,27 @@
  *  - host access is requested at runtime per-origin (optional_host_permissions),
  *    never as a blanket install-time grab.
  */
-import { badge, evaluate, fold, isDue, transition, type FetchedResponse } from "./checks.js";
+import {
+  badge,
+  checkWithRetry,
+  evaluate,
+  fold,
+  isDue,
+  transition,
+  type Answered,
+  type Unanswered,
+} from "./checks.js";
 import { hasOriginPermission, loadConfigs, loadStates, saveConfigs, saveStates } from "./storage.js";
 import { DEFAULT_ENDPOINTS, RETIRED_PLATFORM_HEALTH_URL, type CheckResult, type EndpointConfig } from "./types.js";
 
 const ALARM = "pulse";
+
+/**
+ * How long to wait before the second attempt. Long enough to clear a transient
+ * reset, short enough that a check still finishes well inside the worker's
+ * ~30s idle budget even when every endpoint retries.
+ */
+const RETRY_DELAY_MS = 400;
 
 chrome.runtime.onInstalled.addListener(() => void ensureAlarm());
 chrome.runtime.onStartup.addListener(() => void ensureAlarm());
@@ -63,7 +79,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function fetchEndpoint(config: EndpointConfig): Promise<CheckResult> {
-  const started = performance.now();
   const now = Date.now();
 
   // Attempting a fetch the user never authorised would both fail and spray
@@ -79,26 +94,36 @@ async function fetchEndpoint(config: EndpointConfig): Promise<CheckResult> {
     );
   }
 
-  try {
-    const response = await fetch(config.url, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(15_000),
-    });
-    let json: unknown;
+  // One attempt: all IO, no decisions. Whether a failure is worth retrying is
+  // decided by checkWithRetry in checks.ts, where it is unit-tested.
+  const attempt = async (): Promise<Answered | Unanswered> => {
+    const from = performance.now();
     try {
-      json = await response.json();
-    } catch {
-      json = undefined;
+      const response = await fetch(config.url, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(15_000),
+      });
+      let json: unknown;
+      try {
+        json = await response.json();
+      } catch {
+        json = undefined;
+      }
+      return { status: response.status, json, latencyMs: Math.round(performance.now() - from) };
+    } catch (error) {
+      const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+      return {
+        // Permission was settled above, so naming it here would point at a
+        // cause this code has already ruled out.
+        error: timedOut ? "timed out after 15s" : "the request did not complete",
+        timedOut,
+        latencyMs: Math.round(performance.now() - from),
+      };
     }
-    const fetched: FetchedResponse = { status: response.status, json };
-    return evaluate(config, fetched, Math.round(performance.now() - started), now);
-  } catch (error) {
-    const reason =
-      error instanceof DOMException && error.name === "TimeoutError"
-        ? "timed out after 15s"
-        : "network error — host unreachable or permission not granted";
-    return evaluate(config, { error: reason }, Math.round(performance.now() - started), now);
-  }
+  };
+
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  return checkWithRetry(config, attempt, sleep, now, RETRY_DELAY_MS);
 }
 
 async function poll(force = false): Promise<void> {

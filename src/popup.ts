@@ -44,6 +44,16 @@ async function render(): Promise<void> {
 
     item.append(dot, name, detail);
 
+    // A check that only succeeded on its second attempt is still ok — one
+    // dropped request is the network, not the service. But swallowing it
+    // silently would hide a path that is degrading, so it is said out loud.
+    if (result?.outcome === "ok" && result.retried) {
+      const note = document.createElement("span");
+      note.className = "reason";
+      note.textContent = "answered on the second attempt — the path dropped one request";
+      item.append(note);
+    }
+
     if (result?.outcome === "fail" && result.reason !== null) {
       const reason = document.createElement("span");
       reason.className = "reason";

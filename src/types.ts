@@ -28,6 +28,13 @@ export type CheckResult = {
   reason: string | null;
   latencyMs: number;
   checkedAt: number;
+  /**
+   * True when the first attempt failed to complete and a second one answered.
+   * The check counts as ok — one dropped request is the network, not the
+   * service — but a watcher that hides the retry cannot show a path that is
+   * quietly degrading, so it is recorded and surfaced.
+   */
+  retried: boolean;
 };
 
 export type EndpointState = {

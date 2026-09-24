@@ -26,13 +26,67 @@ export type FetchedResponse = {
   json: unknown;
 };
 
+/** A response that arrived, with how long it took. */
+export type Answered = FetchedResponse & { latencyMs: number };
+/**
+ * A request that never produced a response, whether the clock ran out, and how
+ * long it took to fail — a fast failure is a reset, a slow one is a timeout,
+ * and the difference is what told us this was transport and not permission.
+ */
+export type Unanswered = { error: string; timedOut: boolean; latencyMs?: number };
+
+/**
+ * Run a check, retrying ONCE when the request never completed.
+ *
+ * 2026-09-24: the popup reported the platform API down. The API was up — 12 of
+ * 12 probes returned 200 — and one request had simply died in transport. A
+ * single failed poll flipped the badge and fired a notification, which is how a
+ * watcher teaches its owner to ignore it.
+ *
+ * What is NOT retried, and why:
+ *  - a response that ARRIVED and was wrong (a 503, a missing JSON field). The
+ *    service answered; asking twice does not make its answer truer.
+ *  - a TIMEOUT. Fifteen seconds of silence from a dependency-free route is a
+ *    real signal, and a second fifteen-second wait would delay the alarm
+ *    rather than sharpen it.
+ *
+ * The attempt and the sleep are injected so this is testable without a network,
+ * a browser, or a real delay — the retry is a decision, and decisions live here.
+ */
+export async function checkWithRetry(
+  config: EndpointConfig,
+  attempt: () => Promise<Answered | Unanswered>,
+  sleep: (ms: number) => Promise<void>,
+  now: number,
+  retryDelayMs: number,
+): Promise<CheckResult> {
+  const first = await attempt();
+
+  if (!("error" in first)) {
+    const { latencyMs, ...fetched } = first;
+    return evaluate(config, fetched, latencyMs, now);
+  }
+
+  if (first.timedOut) return evaluate(config, { error: first.error }, first.latencyMs ?? 0, now);
+
+  await sleep(retryDelayMs);
+  const second = await attempt();
+
+  if (!("error" in second)) {
+    const { latencyMs, ...fetched } = second;
+    return evaluate(config, fetched, latencyMs, now, true);
+  }
+  return evaluate(config, { error: `${second.error} (two attempts)` }, 0, now, true);
+}
+
 export function evaluate(
   config: EndpointConfig,
   response: FetchedResponse | { error: string },
   latencyMs: number,
   now: number,
+  retried = false,
 ): CheckResult {
-  const base = { endpointId: config.id, latencyMs, checkedAt: now };
+  const base = { endpointId: config.id, latencyMs, checkedAt: now, retried };
 
   if ("error" in response) {
     return { ...base, outcome: "fail", reason: response.error };

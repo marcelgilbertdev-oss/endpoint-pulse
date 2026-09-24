@@ -50,7 +50,7 @@ that is where the unit tests are, and the service worker stays a shell.
 ## Tests
 
 ```
-npm run check        # typecheck + 16 unit tests + build
+npm run check        # typecheck + 29 unit tests + build
 npx playwright test  # loads the built extension into Chromium and proves it
 ```
 
@@ -76,6 +76,41 @@ Then `chrome://extensions` → Developer mode → **Load unpacked** → `dist/`.
   a monitor inside a browser shouldn't pretend to be Pingdom.
 - No auth headers yet. Watching an endpoint that needs credentials means
   storing credentials, and that deserves a real design pass, not a v0.1 field.
+
+## One dropped request is the network, not the service (24 Sep 2026)
+
+The popup reported the platform API down: *"network error — host unreachable or
+permission not granted"*, 313ms. The API was up — twelve consecutive probes of
+that exact URL returned 200 — and permission was granted. Two things in the
+code proved it without guessing:
+
+- the **no-permission path returns before fetching, with latency hardcoded to
+  `0`**. A reading of 313ms therefore *cannot* be the permission path, so the
+  message was naming a cause the code had already ruled out twenty lines
+  earlier. It sent two people hunting in the wrong half of the system.
+- a **313ms failure is a reset, not a timeout** — a timeout takes fifteen
+  seconds and says so.
+
+One request had died in transport, and a single failed poll flipped the badge
+red and fired a notification. A watcher that cries wolf teaches its owner to
+ignore it, which is worse than not watching at all.
+
+So a request that **never completed** is now retried once. A request that
+**arrived and was wrong** — a 503, a missing JSON field — is not: the service
+answered, and asking twice does not make its answer truer. A **timeout** is not
+retried either: fifteen seconds of silence from a dependency-free route is
+already the signal, and a second fifteen-second wait would delay the alarm
+rather than sharpen it.
+
+The retry is **recorded and shown**, never swallowed — the popup says *"answered
+on the second attempt — the path dropped one request"*. A silent retry would
+hide exactly the thing worth seeing, which is a path that starts needing one
+every time.
+
+The decision lives in `checks.ts` with the attempt and the sleep injected, so
+seven unit tests prove which failures earn a second attempt, which do not, that
+one blip no longer notifies, and that two consecutive failures still do — with
+no network, no browser, and no real delay.
 
 ## The lesson the extension taught its own platform (14 Sep 2026)
 
